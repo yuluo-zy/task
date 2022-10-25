@@ -3,11 +3,10 @@ use crate::runnable::Runnable;
 use crate::schema::fang_tasks;
 use crate::CronError;
 use crate::Scheduled::*;
-use chrono::DateTime;
+use chrono::{DateTime, NaiveDateTime};
 use chrono::Duration;
 use chrono::Utc;
 use cron::Schedule;
-use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::r2d2;
 use diesel::r2d2::ConnectionManager;
@@ -26,7 +25,7 @@ use dotenv::dotenv;
 #[cfg(test)]
 use std::env;
 
-pub type PoolConnection = PooledConnection<ConnectionManager<PgConnection>>;
+pub type PoolConnection = PooledConnection<ConnectionManager<MysqlConnection>>;
 
 #[derive(Queryable, Identifiable, Debug, Eq, PartialEq, Clone, TypedBuilder)]
 #[diesel(table_name = fang_tasks)]
@@ -46,11 +45,11 @@ pub struct Task {
     #[builder(setter(into))]
     pub retries: i32,
     #[builder(setter(into))]
-    pub scheduled_at: DateTime<Utc>,
+    pub scheduled_at: NaiveDateTime,
     #[builder(setter(into))]
-    pub created_at: DateTime<Utc>,
+    pub created_at: NaiveDateTime,
     #[builder(setter(into))]
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: NaiveDateTime,
 }
 
 #[derive(Insertable, Debug, Eq, PartialEq, Clone, TypedBuilder)]
@@ -63,7 +62,7 @@ pub struct NewTask {
     #[builder(setter(into))]
     uniq_hash: Option<String>,
     #[builder(setter(into))]
-    scheduled_at: DateTime<Utc>,
+    scheduled_at: NaiveDateTime,
 }
 
 #[derive(Debug, Error)]
@@ -120,7 +119,7 @@ pub trait Queueable {
 #[derive(Clone, TypedBuilder)]
 pub struct Queue {
     #[builder(setter(into))]
-    pub connection_pool: r2d2::Pool<r2d2::ConnectionManager<PgConnection>>,
+    pub connection_pool: r2d2::Pool<r2d2::ConnectionManager<MysqlConnection>>,
 }
 
 impl Queueable for Queue {
@@ -133,7 +132,7 @@ impl Queueable for Queue {
     fn insert_task(&self, params: &dyn Runnable) -> Result<Task, QueueError> {
         let mut connection = self.get_connection()?;
 
-        Self::insert_query(&mut connection, params, Utc::now())
+        Self::insert_query(&mut connection, params, Utc::now().naive_utc())
     }
     fn schedule_task(&self, params: &dyn Runnable) -> Result<Task, QueueError> {
         let mut connection = self.get_connection()?;
@@ -206,7 +205,9 @@ impl Queueable for Queue {
         Self::schedule_retry_query(&mut connection, task, backoff_seconds, error)
     }
 }
-
+fn get_naive_date_time(date_time :DateTime<Utc>) -> NaiveDateTime {
+    date_time.naive_utc()
+}
 impl Queue {
     pub fn get_connection(&self) -> Result<PoolConnection, QueueError> {
         let result = self.connection_pool.get();
@@ -220,7 +221,7 @@ impl Queue {
     }
 
     pub fn schedule_task_query(
-        connection: &mut PgConnection,
+        connection: &mut MysqlConnection,
         params: &dyn Runnable,
     ) -> Result<Task, QueueError> {
         let scheduled_at = match params.cron() {
@@ -229,9 +230,9 @@ impl Queue {
                     let schedule = Schedule::from_str(&cron_pattern)?;
                     let mut iterator = schedule.upcoming(Utc);
 
-                    iterator
+                    get_naive_date_time(iterator
                         .next()
-                        .ok_or(QueueError::CronError(CronError::NoTimestampsError))?
+                        .ok_or(QueueError::CronError(CronError::NoTimestampsError))?)
                 }
                 ScheduleOnce(datetime) => datetime,
             },
@@ -251,9 +252,9 @@ impl Queue {
     }
 
     pub fn insert_query(
-        connection: &mut PgConnection,
+        connection: &mut MysqlConnection,
         params: &dyn Runnable,
-        scheduled_at: DateTime<Utc>,
+        scheduled_at: NaiveDateTime,
     ) -> Result<Task, QueueError> {
         if !params.uniq() {
             let new_task = NewTask::builder()
@@ -289,12 +290,12 @@ impl Queue {
         }
     }
 
-    pub fn fetch_task_query(connection: &mut PgConnection, task_type: String) -> Option<Task> {
+    pub fn fetch_task_query(connection: &mut MysqlConnection, task_type: String) -> Option<Task> {
         Self::fetch_task_of_type_query(connection, &task_type)
     }
 
     pub fn fetch_and_touch_query(
-        connection: &mut PgConnection,
+        connection: &mut MysqlConnection,
         task_type: String,
     ) -> Result<Option<Task>, QueueError> {
         connection.transaction::<Option<Task>, QueueError, _>(|conn| {
@@ -315,19 +316,19 @@ impl Queue {
         })
     }
 
-    pub fn find_task_by_id_query(connection: &mut PgConnection, id: Uuid) -> Option<Task> {
+    pub fn find_task_by_id_query(connection: &mut MysqlConnection, id: Uuid) -> Option<Task> {
         fang_tasks::table
             .filter(fang_tasks::id.eq(id))
             .first::<Task>(connection)
             .ok()
     }
 
-    pub fn remove_all_tasks_query(connection: &mut PgConnection) -> Result<usize, QueueError> {
+    pub fn remove_all_tasks_query(connection: &mut MysqlConnection) -> Result<usize, QueueError> {
         Ok(diesel::delete(fang_tasks::table).execute(connection)?)
     }
 
     pub fn remove_all_scheduled_tasks_query(
-        connection: &mut PgConnection,
+        connection: &mut MysqlConnection,
     ) -> Result<usize, QueueError> {
         let query = fang_tasks::table.filter(fang_tasks::scheduled_at.gt(Utc::now()));
 
@@ -335,7 +336,7 @@ impl Queue {
     }
 
     pub fn remove_tasks_of_type_query(
-        connection: &mut PgConnection,
+        connection: &mut MysqlConnection,
         task_type: &str,
     ) -> Result<usize, QueueError> {
         let query = fang_tasks::table.filter(fang_tasks::task_type.eq(task_type));
@@ -344,7 +345,7 @@ impl Queue {
     }
 
     pub fn remove_task_by_metadata_query(
-        connection: &mut PgConnection,
+        connection: &mut MysqlConnection,
         task: &dyn Runnable,
     ) -> Result<usize, QueueError> {
         let metadata = serde_json::to_value(task).unwrap();
@@ -356,14 +357,14 @@ impl Queue {
         Ok(diesel::delete(query).execute(connection)?)
     }
 
-    pub fn remove_task_query(connection: &mut PgConnection, id: Uuid) -> Result<usize, QueueError> {
+    pub fn remove_task_query(connection: &mut MysqlConnection, id: Uuid) -> Result<usize, QueueError> {
         let query = fang_tasks::table.filter(fang_tasks::id.eq(id));
 
         Ok(diesel::delete(query).execute(connection)?)
     }
 
     pub fn update_task_state_query(
-        connection: &mut PgConnection,
+        connection: &mut MysqlConnection,
         task: &Task,
         state: FangTaskState,
     ) -> Result<Task, QueueError> {
@@ -376,7 +377,7 @@ impl Queue {
     }
 
     pub fn fail_task_query(
-        connection: &mut PgConnection,
+        connection: &mut MysqlConnection,
         task: &Task,
         error: &str,
     ) -> Result<Task, QueueError> {
@@ -394,12 +395,12 @@ impl Queue {
     }
 
     #[cfg(test)]
-    pub fn connection_pool(pool_size: u32) -> r2d2::Pool<r2d2::ConnectionManager<PgConnection>> {
+    pub fn connection_pool(pool_size: u32) -> r2d2::Pool<r2d2::ConnectionManager<MysqlConnection>> {
         dotenv().ok();
 
         let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-        let manager = r2d2::ConnectionManager::<PgConnection>::new(database_url);
+        let manager = r2d2::ConnectionManager::<MysqlConnection>::new(database_url);
 
         r2d2::Pool::builder()
             .max_size(pool_size)
@@ -407,7 +408,7 @@ impl Queue {
             .unwrap()
     }
 
-    fn fetch_task_of_type_query(connection: &mut PgConnection, task_type: &str) -> Option<Task> {
+    fn fetch_task_of_type_query(connection: &mut MysqlConnection, task_type: &str) -> Option<Task> {
         fang_tasks::table
             .order(fang_tasks::created_at.asc())
             .order(fang_tasks::scheduled_at.asc())
@@ -422,7 +423,7 @@ impl Queue {
     }
 
     fn find_task_by_uniq_hash_query(
-        connection: &mut PgConnection,
+        connection: &mut MysqlConnection,
         uniq_hash: &str,
     ) -> Option<Task> {
         fang_tasks::table
@@ -433,7 +434,7 @@ impl Queue {
     }
 
     pub fn schedule_retry_query(
-        connection: &mut PgConnection,
+        connection: &mut MysqlConnection,
         task: &Task,
         backoff_seconds: u32,
         error: &str,

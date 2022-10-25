@@ -3,10 +3,7 @@
 use std::time::Duration;
 use thiserror::Error;
 use typed_builder::TypedBuilder;
-
 /// Represents a schedule for scheduled tasks.
-///
-/// It's used in the [`AsyncRunnable::cron`] and [`Runnable::cron`]
 #[derive(Debug, Clone)]
 pub enum Scheduled {
     /// A cron pattern for a periodic task
@@ -16,7 +13,7 @@ pub enum Scheduled {
     /// A datetime for a scheduled task that will be executed once
     ///
     /// For example, `Scheduled::ScheduleOnce(chrono::Utc::now() + std::time::Duration::seconds(7i64))`
-    ScheduleOnce(DateTime<Utc>),
+    ScheduleOnce(NaiveDateTime),
 }
 
 /// List of error types that can occur while working with cron schedules.
@@ -103,11 +100,12 @@ pub struct FangError {
 
 #[doc(hidden)]
 #[cfg(feature = "blocking")]
+#[macro_use]
 extern crate diesel;
 
 #[doc(hidden)]
 #[cfg(feature = "blocking")]
-pub use diesel::pg::PgConnection;
+pub use diesel::mysql::MysqlConnection;
 
 #[doc(hidden)]
 pub use typetag;
@@ -123,6 +121,7 @@ pub use serde_derive::{Deserialize, Serialize};
 
 #[doc(hidden)]
 pub use chrono::DateTime;
+use chrono::NaiveDateTime;
 #[doc(hidden)]
 pub use chrono::Utc;
 
@@ -131,17 +130,3 @@ pub mod blocking;
 
 #[cfg(feature = "blocking")]
 pub use blocking::*;
-
-#[cfg(feature = "asynk")]
-pub mod asynk;
-
-#[cfg(feature = "asynk")]
-pub use asynk::*;
-
-#[cfg(feature = "asynk")]
-#[doc(hidden)]
-pub use bb8_postgres::tokio_postgres::tls::NoTls;
-
-#[cfg(feature = "asynk")]
-#[doc(hidden)]
-pub use async_trait::async_trait;
