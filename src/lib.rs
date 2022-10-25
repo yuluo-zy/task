@@ -100,7 +100,6 @@ pub struct FangError {
 
 #[doc(hidden)]
 #[cfg(feature = "blocking")]
-#[macro_use]
 extern crate diesel;
 
 #[doc(hidden)]
